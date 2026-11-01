@@ -320,6 +320,22 @@ tbody tr:last-child td { border-bottom: 0; }
 .agenda-empty strong { color: #55645a; font-size: 11px; }
 .agenda-empty>span { font-size: 9px; }
 .agenda-empty .button { margin-top: 5px; }
+.due-summary { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin-bottom: 14px; }
+.due-list { display: grid; gap: 10px; }
+.due-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; border: 1px solid #edf0ec; border-radius: 8px; background: #fff; }
+.due-card-overdue { border-color: #efdfc6; background: #fffdf9; }
+.due-card-main { min-width: 0; flex: 1; }
+.due-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.due-card-heading h3 { color: #3d4b42; font-size: 12px; font-weight: 650; }
+.due-card-heading p { margin-top: 4px; color: #89938c; font-size: 9px; line-height: 1.5; }
+.due-card-details { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; }
+.due-card-details>span { display: grid; gap: 4px; color: #657269; font-size: 9px; }
+.due-card-details strong { color: #929b95; font-size: 8px; font-weight: 600; text-transform: uppercase; }
+.due-card-file { min-width: 0; }
+.due-pdf-link { max-width: 300px; overflow: hidden; color: #4a8060; text-overflow: ellipsis; white-space: nowrap; }
+.due-pdf-loading,.due-pdf-error { color: #89938c; font-size: 9px; }
+.due-pdf-error { color: #a35346; }
+.due-complete-button { min-height: 34px; flex: 0 0 auto; white-space: nowrap; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 10px; margin-top: 2px; border-top: 1px solid #edf0ec; }
 .form-notice { color: #8f6a3d; background: #fbf4e9; border-radius: 6px; padding: 10px; font-size: 10px; line-height: 1.5; }
 .toast { z-index: 60; position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 9px; padding: 10px 14px 10px 10px; border: 1px solid #dfe9df; border-radius: 8px; background: #fff; box-shadow: 0 7px 28px #1f38201a; color: #40584a; font-size: 11px; animation: toast-in .18s ease-out; }
@@ -364,6 +380,10 @@ tbody tr:last-child td { border-bottom: 0; }
   .full-panel { padding: 15px 12px; }
   .list-toolbar { align-items: stretch; }
   .agenda-panel { padding: 15px 12px; }
+  .due-summary { gap: 7px; }
+  .due-card { align-items: flex-start; flex-direction: column; padding: 11px; }
+  .due-complete-button { align-self: flex-end; }
+  .due-card-details { gap: 10px 14px; }
   .agenda-toolbar { flex-direction: column; }
   .agenda-controls { align-self: stretch; justify-content: space-between; }
   .agenda-week-label { min-width: 0; }

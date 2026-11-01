@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { AppData, MaintenanceStatus, StockCategory, StockMovementType } from "./types";
+import type { AppData, DueRecurrence, DueStatus, MaintenanceStatus, StockCategory, StockMovementType } from "./types";
 
 type CondoRow = { id: string; name: string; address: string };
 type VisitRow = {
@@ -21,6 +21,12 @@ type StockMovementRow = {
   id: string; condo_id: string; item_id: string; movement_type: "in" | "out";
   quantity: number; created_at: string; note: string;
 };
+type DueItemRow = {
+  id: string; series_id: string; condo_id: string; title: string; description: string; due_date: string;
+  recurrence: "once" | "semiannual" | "annual" | "biennial" | "triennial";
+  status: "pending" | "paid"; pdf_path: string | null; pdf_name: string | null; paid_at: string | null;
+  created_by: string; created_at: string;
+};
 
 const maintenanceStatusFromDb: Record<MaintenanceRow["status"], MaintenanceStatus> = {
   open: "Aberta", in_progress: "Em andamento", done: "Concluída",
@@ -33,30 +39,41 @@ const categoryToDb: Record<StockCategory, StockItemRow["category"]> = { Limpeza:
 const movementFromDb: Record<StockMovementRow["movement_type"], StockMovementType> = { in: "Entrada", out: "Saída" };
 const movementToDb: Record<StockMovementType, StockMovementRow["movement_type"]> = { Entrada: "in", Saída: "out" };
 const priorityToDb = { Baixa: "low", Média: "medium", Alta: "high" } as const;
+const recurrenceFromDb: Record<DueItemRow["recurrence"], DueRecurrence> = {
+  once: "Único", semiannual: "Semestral", annual: "Anual", biennial: "Bienal", triennial: "Trienal",
+};
+const recurrenceToDb: Record<DueRecurrence, DueItemRow["recurrence"]> = {
+  Único: "once", Semestral: "semiannual", Anual: "annual", Bienal: "biennial", Trienal: "triennial",
+};
+const dueStatusFromDb: Record<DueItemRow["status"], DueStatus> = { pending: "Pendente", paid: "Concluído" };
+const dueStatusToDb: Record<DueStatus, DueItemRow["status"]> = { Pendente: "pending", "Concluído": "paid" };
 
 function throwOnError(error: { message: string } | null) {
   if (error) throw new Error(error.message);
 }
 
 export async function loadCloudData(client: SupabaseClient, userId: string, userName: string): Promise<AppData> {
-  const [condosResult, visitsResult, maintenanceResult, stockResult, movementsResult] = await Promise.all([
+  const [condosResult, visitsResult, maintenanceResult, stockResult, movementsResult, dueItemsResult] = await Promise.all([
     client.from("condos").select("id,name,address").order("name"),
     client.from("daily_visits").select("*").order("visited_at", { ascending: false }),
     client.from("maintenance_requests").select("*").order("scheduled_at"),
     client.from("stock_items").select("*").order("name"),
     client.from("stock_movements").select("*").order("created_at", { ascending: false }),
+    client.from("condo_due_items").select("*").order("due_date"),
   ]);
   throwOnError(condosResult.error);
   throwOnError(visitsResult.error);
   throwOnError(maintenanceResult.error);
   throwOnError(stockResult.error);
   throwOnError(movementsResult.error);
+  throwOnError(dueItemsResult.error);
 
   const condos = (condosResult.data ?? []) as CondoRow[];
   const visits = (visitsResult.data ?? []) as VisitRow[];
   const maintenance = (maintenanceResult.data ?? []) as MaintenanceRow[];
   const stock = (stockResult.data ?? []) as StockItemRow[];
   const movements = (movementsResult.data ?? []) as StockMovementRow[];
+  const dueItems = (dueItemsResult.data ?? []) as DueItemRow[];
 
   return {
     condos,
@@ -85,6 +102,12 @@ export async function loadCloudData(client: SupabaseClient, userId: string, user
       id: movement.id, condoId: movement.condo_id, itemId: movement.item_id,
       type: movementFromDb[movement.movement_type], quantity: movement.quantity,
       createdAt: movement.created_at, note: movement.note,
+    })),
+    dueItems: dueItems.map((item) => ({
+      id: item.id, seriesId: item.series_id, condoId: item.condo_id, title: item.title,
+      description: item.description ?? "", dueDate: item.due_date, recurrence: recurrenceFromDb[item.recurrence],
+      status: dueStatusFromDb[item.status], pdfId: item.pdf_path ? `${userId}:cloud:${item.pdf_path}` : undefined,
+      pdfName: item.pdf_name ?? undefined, createdById: item.created_by, paidAt: item.paid_at ?? undefined, createdAt: item.created_at,
     })),
   };
 }
@@ -125,6 +148,18 @@ export async function syncCloudData(client: SupabaseClient, data: AppData, userI
       movement_type: movementToDb[movement.type], quantity: movement.quantity,
       note: movement.note, created_by: userId, created_at: movement.createdAt,
     })), { onConflict: "id", ignoreDuplicates: true });
+    throwOnError(error);
+  }
+
+  if (data.dueItems.length) {
+    const { error } = await client.from("condo_due_items").upsert(data.dueItems.map((item) => ({
+      id: item.id, series_id: item.seriesId, condo_id: item.condoId, title: item.title,
+      description: item.description, due_date: item.dueDate, recurrence: recurrenceToDb[item.recurrence],
+      status: dueStatusToDb[item.status],
+      pdf_path: item.pdfId?.startsWith(`${userId}:cloud:`) ? item.pdfId.slice(`${userId}:cloud:`.length) : null,
+      pdf_name: item.pdfId ? item.pdfName ?? null : null, paid_at: item.paidAt ?? null,
+      created_by: item.createdById ?? userId, created_at: item.createdAt,
+    })), { onConflict: "id" });
     throwOnError(error);
   }
 }

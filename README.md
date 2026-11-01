@@ -36,17 +36,19 @@ Sem essas variáveis, a tela permite entrar apenas na demonstração local. Com 
 - Visitas diárias com data e horário, responsável, atividades, áreas verificadas, pontos de atenção, observações e registro fotográfico obrigatório.
 - Agenda semanal de manutenções, com data, horário, duração, equipe responsável, fotos obrigatórias e prevenção de conflito de horário.
 - Abertura e atualização de solicitações de manutenção.
+- Vencimentos de documentos por condomínio com anexos PDF opcionais e recorrências única, semestral, anual, bienal ou trienal. Ao concluir uma ocorrência recorrente, o próximo vencimento é criado automaticamente.
+- Menu Documentos para centralizar e abrir os PDFs anexados aos vencimentos do condomínio selecionado.
 - Consulta de materiais e movimentação de estoque.
 - Relatórios resumidos do condomínio selecionado.
 - Layout adaptável e manifesto PWA.
 
-Com Supabase configurado, os registros são sincronizados com o banco PostgreSQL e as fotos são guardadas em um bucket privado, com acesso por associação ao condomínio. A demonstração local armazena as fotos no IndexedDB e mantém os registros apenas neste dispositivo.
+Com Supabase configurado, os registros são sincronizados com o banco PostgreSQL; fotos e PDFs ficam em buckets privados, com acesso por associação ao condomínio. A demonstração local armazena fotos e PDFs no IndexedDB e mantém os registros apenas neste dispositivo.
 
 Registros antigos de visitantes salvos no navegador são preservados no histórico local durante a atualização, mas não aparecem como visitas diárias.
 
 ## Supabase
 
-As migrações `0001_initial_schema.sql` e `0002_cloud_data_and_photos.sql` definem as tabelas, políticas RLS por condomínio e bucket privado para os registros fotográficos. A função `create_condo_for_current_user` cria um condomínio e associa o usuário autenticado como síndico. O saldo de estoque muda por movimentações registradas; as políticas e permissões impedem alterações diretas no saldo.
+As migrações `0001_initial_schema.sql`, `0002_cloud_data_and_photos.sql` e `0003_due_items_and_pdf_documents.sql` definem as tabelas, políticas RLS por condomínio e buckets privados para fotos e PDFs. Aplique também a migração `0003` em projetos que já executaram as migrações anteriores para ativar a nova área de vencimentos. A função `create_condo_for_current_user` cria um condomínio e associa o usuário autenticado como síndico. O saldo de estoque muda por movimentações registradas; as políticas e permissões impedem alterações diretas no saldo.
 
 O Supabase precisa estar configurado e as migrações precisam ser aplicadas antes de usar contas e sincronização. Os dados já salvos anteriormente no modo de demonstração permanecem locais e não são enviados automaticamente para uma conta.
 

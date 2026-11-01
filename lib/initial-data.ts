@@ -38,4 +38,5 @@ export const initialData: AppData = {
     { id: "s-5", condoId: "solar", name: "Fita veda-rosca", category: "Manutenção", quantity: 3, unit: "un.", minimum: 5 },
   ],
   movements: [],
+  dueItems: [],
 };

@@ -4,14 +4,14 @@ import Image from "next/image";
 import { useEffect, useMemo, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { initialData } from "@/lib/initial-data";
-import type { AccessVisit, AppData, Condo, DailyVisit, MaintenanceStatus, Section, StockCategory, StockItem, StockMovementType } from "@/lib/types";
-import { loadPhotoUrls, savePhotos } from "@/lib/photo-storage";
+import type { AccessVisit, AppData, Condo, DailyVisit, DueItem, DueRecurrence, MaintenanceStatus, Section, StockCategory, StockItem, StockMovementType } from "@/lib/types";
+import { loadDuePdfUrl, loadPhotoUrls, saveDuePdf, savePhotos } from "@/lib/photo-storage";
 import { loadCloudData, queueCloudSync } from "@/lib/cloud-data";
 import { getSupabaseClient, supabaseConfigured } from "@/lib/supabase";
 
 const storageKey = "gestao-condominial-v1";
 const emptyPhotoIds: string[] = [];
-const emptyData: AppData = { condos: [], dailyVisits: [], maintenance: [], stock: [], movements: [] };
+const emptyData: AppData = { condos: [], dailyVisits: [], maintenance: [], stock: [], movements: [], dueItems: [] };
 const subscribeToHydration = () => () => {};
 const getHydrationSnapshot = () => true;
 const getServerHydrationSnapshot = () => false;
@@ -31,6 +31,7 @@ function readStoredData(key = storageKey): { data: AppData; notice: string } {
         ...parsed,
         dailyVisits: Array.isArray(parsed.dailyVisits) ? parsed.dailyVisits : [],
         accessHistory: parsed.accessHistory ?? parsed.visits ?? [],
+        dueItems: Array.isArray(parsed.dueItems) ? parsed.dueItems : [],
         maintenance: parsed.maintenance.map((item) => ({
           ...item,
           scheduledAt: item.scheduledAt ?? new Date(`${item.dueDate || todayISO()}T09:00:00`).toISOString(),
@@ -113,6 +114,7 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
     visits: <><path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="10" cy="7" r="4" /><path d="M20 8v6m3-3h-6" /></>,
     maintenance: <><path d="M14.7 6.3a5 5 0 0 0-6.4 6.4L3 18l3 3 5.3-5.3a5 5 0 0 0 6.4-6.4L14 12l-3-3z" /><path d="m17 7 3-3m-1 0h1v1" /></>,
     stock: <><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 12 9 5 9-5M3 16l9 5 9-5" /></>,
+    document: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M8 13h8M8 17h8" /></>,
     reports: <><path d="M3 3v18h18" /><path d="m19 9-5 5-4-4-5 5" /><path d="M16 9h3v3" /></>,
     bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></>,
     plus: <><path d="M12 5v14m-7-7h14" /></>,
@@ -136,6 +138,8 @@ const navItems: { id: Section; label: string; icon: string }[] = [
   { id: "visitas", label: "Visitas", icon: "visits" },
   { id: "agenda", label: "Agenda", icon: "calendar" },
   { id: "manutencoes", label: "Manutenções", icon: "maintenance" },
+  { id: "vencimentos", label: "Vencimentos", icon: "calendar" },
+  { id: "documentos", label: "Documentos", icon: "document" },
   { id: "estoque", label: "Estoque", icon: "stock" },
   { id: "relatorios", label: "Relatórios", icon: "reports" },
 ];
@@ -164,6 +168,14 @@ const getEndTime = (start: string, durationMinutes: number) => {
   return end.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 };
 const makeId = () => crypto.randomUUID();
+const addMonthsToDate = (value: string, months: number) => {
+  const [year, month, day] = value.split("-").map(Number);
+  const result = new Date(Date.UTC(year, month - 1, 1));
+  result.setUTCMonth(result.getUTCMonth() + months);
+  const lastDay = new Date(Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0)).getUTCDate();
+  result.setUTCDate(Math.min(day, lastDay));
+  return `${result.getUTCFullYear()}-${String(result.getUTCMonth() + 1).padStart(2, "0")}-${String(result.getUTCDate()).padStart(2, "0")}`;
+};
 const formatTime = (value: string) => new Date(value).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 const formatDate = (value: string) => new Date(`${value}T12:00:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
 const validatePhotos = (files: File[]) => {
@@ -193,7 +205,7 @@ export default function Home() {
   const [condoId, setCondoId] = useState(initialData.condos[0].id);
   const [agendaDate, setAgendaDate] = useState(todayISO());
   const [section, setSection] = useState<Section>("inicio");
-  const [dialog, setDialog] = useState<"visit" | "maintenance" | "movement" | "item" | "condo" | null>(null);
+  const [dialog, setDialog] = useState<"visit" | "maintenance" | "movement" | "item" | "condo" | "due" | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
   const [query, setQuery] = useState("");
   const [toast, setToast] = useState(stored.notice);
@@ -303,6 +315,7 @@ export default function Home() {
   const visits = useMemo(() => data.dailyVisits.filter((item) => item.condoId === condoId), [data.dailyVisits, condoId]);
   const maintenance = useMemo(() => data.maintenance.filter((item) => item.condoId === condoId), [data.maintenance, condoId]);
   const stock = useMemo(() => data.stock.filter((item) => item.condoId === condoId), [data.stock, condoId]);
+  const dueItems = useMemo(() => data.dueItems.filter((item) => item.condoId === condoId), [data.dueItems, condoId]);
   const todayVisits = visits.filter((item) => localDate(new Date(item.visitedAt)) === todayISO());
   const openTasks = maintenance.filter((item) => item.status !== "Concluída");
   const lowStock = stock.filter((item) => item.quantity <= item.minimum);
@@ -400,6 +413,59 @@ export default function Home() {
   const changeMaintenanceStatus = (id: string, status: MaintenanceStatus) => {
     updateData((current) => ({ ...current, maintenance: current.maintenance.map((item) => item.id === id ? { ...item, status } : item) }));
     setToast(`Manutenção atualizada: ${status.toLowerCase()}.`);
+  };
+  const createDueItem = async (form: HTMLFormElement) => {
+    const values = new FormData(form);
+    const title = String(values.get("title")).trim();
+    const description = String(values.get("description")).trim();
+    const dueDate = String(values.get("dueDate"));
+    const recurrence = String(values.get("recurrence")) as DueRecurrence;
+    const recurrences: DueRecurrence[] = ["Único", "Semestral", "Anual", "Bienal", "Trienal"];
+    if (!title || title.length > 200 || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate) || !recurrences.includes(recurrence)) {
+      setToast("Informe a descrição, uma data válida e a periodicidade do vencimento.");
+      return;
+    }
+
+    const id = makeId();
+    const file = values.get("pdf");
+    const pdfFile = file instanceof File && file.size > 0 ? file : null;
+    let pdfId: string | undefined;
+    try {
+      if (pdfFile) pdfId = await saveDuePdf(pdfFile, photoScope, condoId, id);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Não foi possível registrar o PDF do vencimento.");
+      return;
+    }
+
+    const next: DueItem = {
+      id, seriesId: id, condoId, title, description, dueDate, recurrence, status: "Pendente",
+      pdfId, pdfName: pdfFile?.name, createdById: sessionId, createdAt: new Date().toISOString(),
+    };
+    updateData((current) => ({ ...current, dueItems: [next, ...current.dueItems] }));
+    setDialog(null);
+    setToast("Vencimento cadastrado.");
+  };
+  const completeDueItem = (item: DueItem) => {
+    const monthsByRecurrence: Partial<Record<DueRecurrence, number>> = {
+      Semestral: 6, Anual: 12, Bienal: 24, Trienal: 36,
+    };
+    const months = monthsByRecurrence[item.recurrence];
+    const completedAt = new Date().toISOString();
+    const nextOccurrence: DueItem | null = months ? {
+      id: makeId(), seriesId: item.seriesId || item.id, condoId: item.condoId, title: item.title,
+      description: item.description, dueDate: addMonthsToDate(item.dueDate, months),
+      recurrence: item.recurrence, status: "Pendente", createdById: sessionId, createdAt: completedAt,
+    } : null;
+    updateData((current) => ({
+      ...current,
+      dueItems: [
+        ...(nextOccurrence ? [nextOccurrence] : []),
+        ...current.dueItems.map((entry) => entry.id === item.id ? { ...entry, status: "Concluído" as const, paidAt: completedAt } : entry),
+      ],
+    }));
+    setToast(nextOccurrence
+      ? `Documento concluído. Próximo vencimento em ${formatLongDate(nextOccurrence.dueDate)}.`
+      : "Documento marcado como concluído.");
   };
   const moveStock = (form: HTMLFormElement) => {
     const values = new FormData(form);
@@ -501,7 +567,11 @@ export default function Home() {
   const filteredVisits = visits.filter((item) => `${item.responsible} ${item.activities.join(" ")} ${item.checkedAreas.join(" ")} ${item.attentionAreas.join(" ")} ${item.notes}`.toLowerCase().includes(query.toLowerCase()));
   const filteredMaintenance = maintenance.filter((item) => `${item.title} ${item.location} ${item.assignee} ${item.status}`.toLowerCase().includes(query.toLowerCase()));
   const filteredStock = stock.filter((item) => `${item.name} ${item.category}`.toLowerCase().includes(query.toLowerCase()));
-  const headingAction = !hasCondo
+  const headingAction = section === "vencimentos"
+    ? { label: "Cadastrar vencimento", action: () => setDialog("due") }
+    : section === "documentos"
+      ? { label: "Cadastrar documento", action: () => { setSection("vencimentos"); setDialog("due"); } }
+    : !hasCondo
     ? { label: "Cadastrar condomínio", action: () => setDialog("condo") }
     : section === "manutencoes"
     ? { label: "Nova manutenção", action: () => setDialog("maintenance") }
@@ -551,13 +621,15 @@ export default function Home() {
         <header className="topbar"><button className="icon-button menu-button" onClick={() => setMobileNav(true)} aria-label="Abrir menu"><Icon name="menu" /></button><div className="breadcrumb">Painel <span>/</span> <strong>{title}</strong></div><div className="topbar-right"><span className="today-label"><Icon name="clock" size={16} />{new Date().toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" })}</span><button className="icon-button notification-button" aria-label="Notificações"><Icon name="bell" size={19} /><i /></button><div className="topbar-divider" /><div className="profile-avatar top-avatar">{accountInitials}</div></div></header>
         <div className="page-content">
           {session && cloudError && <div className="cloud-sync-warning" role="status"><span>Não foi possível sincronizar os dados: {cloudError}</span><button className="table-action" onClick={() => setCloudSyncRetryKey((value) => value + 1)}>Tentar novamente</button></div>}
-          <div className="page-heading"><div><div className="eyebrow"><span className="status-dot" /> SEU DIA, EM ORDEM</div><h1>{section === "inicio" ? `Bom dia, ${accountName.split(" ")[0]}` : title}<span className="heading-period">.</span></h1><p>{!hasCondo ? "Cadastre um condomínio para começar a organizar sua rotina." : section === "inicio" ? `Acompanhe o que acontece no ${condo.name}.` : `${condo.name} · ${condo.address}`}</p></div><button className="button button-primary heading-action" onClick={headingAction.action}><Icon name={section === "relatorios" ? "arrow" : "plus"} size={18} /><span>{headingAction.label}</span></button></div>
+          <div className="page-heading"><div><div className="eyebrow"><span className="status-dot" /> SEU DIA, EM ORDEM</div><h1>{section === "inicio" ? `Bom dia, ${accountName.split(" ")[0]}` : title}<span className="heading-period">.</span></h1><p>{!hasCondo ? "Cadastre um condomínio para começar a organizar sua rotina." : section === "inicio" ? `Acompanhe o que acontece no ${condo.name}.` : `${condo.name} · ${condo.address}`}</p></div>{headingAction && <button className="button button-primary heading-action" onClick={headingAction.action}><Icon name={section === "relatorios" ? "arrow" : "plus"} size={18} /><span>{headingAction.label}</span></button>}</div>
 
           {!hasCondo ? <section className="panel onboarding-panel"><div className="welcome-icon"><Icon name="building" size={20} /></div><h2>Comece cadastrando seu condomínio</h2><p>Os condomínios e registros ficam separados por conta de síndico neste dispositivo.</p><button className="button button-primary" onClick={() => setDialog("condo")}><Icon name="plus" size={17} />Cadastrar primeiro condomínio</button></section> : <>
             {section === "inicio" && <Dashboard condo={condo} userName={accountName} todayVisits={todayVisits} openTasks={openTasks} lowStock={lowStock} maintenance={maintenance} onNavigate={goTo} onNewVisit={() => setDialog("visit")} onNewMaintenance={openNewMaintenance} />}
             {section === "visitas" && <VisitsPage visits={filteredVisits} photoScope={photoScope} query={query} setQuery={setQuery} onNew={() => setDialog("visit")} />}
             {section === "agenda" && <AgendaPage items={maintenance} photoScope={photoScope} selectedDate={agendaDate} onSelectDate={setAgendaDate} onChangeStatus={changeMaintenanceStatus} onNew={openNewMaintenance} />}
             {section === "manutencoes" && <MaintenancePage items={filteredMaintenance} photoScope={photoScope} query={query} setQuery={setQuery} onStatus={changeMaintenanceStatus} onNew={openNewMaintenance} />}
+            {section === "vencimentos" && <DueItemsPage items={dueItems} onNew={() => setDialog("due")} onComplete={completeDueItem} />}
+            {section === "documentos" && <DocumentsPage items={dueItems} onNew={() => { setSection("vencimentos"); setDialog("due"); }} />}
             {section === "estoque" && <StockPage items={filteredStock} movements={(data.movements ?? []).filter((item) => item.condoId === condoId)} query={query} setQuery={setQuery} onNew={() => setDialog("movement")} onAddItem={() => setDialog("item")} />}
             {section === "relatorios" && <ReportsPage visits={visits} maintenance={maintenance} stock={stock} />}
           </>}
@@ -565,7 +637,7 @@ export default function Home() {
           <footer className="page-footer"><span>mf <span className="footer-dot">·</span> Feito para cuidar do que é de todos.</span><span className="local-badge"><span />{session ? "Conta individual · dados neste dispositivo" : "Demonstração local"}</span></footer>
         </div>
       </section>
-      {dialog && <Modal type={dialog} items={stock} defaultScheduleDate={section === "agenda" ? agendaDate : todayISO()} defaultResponsible={accountName} onClose={() => setDialog(null)} onVisit={createVisit} onMaintenance={createMaintenance} onMovement={moveStock} onStockItem={createStockItem} onCondo={createCondo} />}
+      {dialog && <Modal type={dialog} items={stock} defaultScheduleDate={section === "agenda" ? agendaDate : todayISO()} defaultResponsible={accountName} onClose={() => setDialog(null)} onVisit={createVisit} onMaintenance={createMaintenance} onMovement={moveStock} onStockItem={createStockItem} onCondo={createCondo} onDueItem={createDueItem} />}
       {toast && <div className="toast" role="status"><span className="toast-check"><Icon name="check" size={15} /></span>{toast}</div>}
     </main>
   );
@@ -698,6 +770,101 @@ function MaintenancePage({ items, photoScope, query, setQuery, onStatus, onNew }
   </section>;
 }
 
+function PdfDocumentLink({ id, name }: { id: string; name: string }) {
+  const [document, setDocument] = useState<{ url: string; local: boolean } | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    let localUrl: string | null = null;
+    void loadDuePdfUrl(id).then((result) => {
+      if (!active) {
+        if (result.local) URL.revokeObjectURL(result.url);
+        return;
+      }
+      if (result.local) localUrl = result.url;
+      setDocument(result);
+    }).catch((loadError: unknown) => {
+      if (active) setError(loadError instanceof Error ? loadError.message : "Não foi possível abrir o PDF.");
+    });
+    return () => {
+      active = false;
+      if (localUrl) URL.revokeObjectURL(localUrl);
+    };
+  }, [id]);
+
+  if (error) return <span className="due-pdf-error" role="status">{error}</span>;
+  if (!document) return <span className="due-pdf-loading">Carregando PDF…</span>;
+  return <a className="due-pdf-link" href={document.url} target="_blank" rel="noreferrer" download={name}>Abrir PDF: {name}</a>;
+}
+
+function DueItemsPage({ items, onNew, onComplete }: {
+  items: DueItem[];
+  onNew: () => void;
+  onComplete: (item: DueItem) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const today = todayISO();
+  const overdue = items.filter((item) => item.status === "Pendente" && item.dueDate < today);
+  const pending = items.filter((item) => item.status === "Pendente")
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const completed = items.filter((item) => item.status === "Concluído")
+    .sort((a, b) => b.dueDate.localeCompare(a.dueDate));
+  const filtered = [...pending, ...completed].filter((item) =>
+    `${item.title} ${item.description} ${item.recurrence} ${item.pdfName ?? ""}`.toLocaleLowerCase("pt-BR").includes(query.toLocaleLowerCase("pt-BR")),
+  );
+  const recurrenceLabels: Record<DueRecurrence, string> = {
+    Único: "Único", Semestral: "A cada 6 meses", Anual: "Anual", Bienal: "A cada 2 anos", Trienal: "A cada 3 anos",
+  };
+
+  return <>
+    <div className="due-summary">
+      <div className="summary-box"><span>VENCIMENTOS PENDENTES</span><strong>{pending.length.toString().padStart(2, "0")}</strong><small>neste condomínio</small></div>
+      <div className={`summary-box ${overdue.length ? "summary-warning" : ""}`}><span>EM ATRASO</span><strong>{overdue.length.toString().padStart(2, "0")}</strong><small>{overdue.length ? "precisam de atenção" : "nenhum vencido"}</small></div>
+      <div className="summary-box"><span>CONCLUÍDOS</span><strong>{completed.length.toString().padStart(2, "0")}</strong><small>no histórico</small></div>
+    </div>
+    <section className="panel full-panel">
+      <div className="panel-heading"><div><div className="panel-kicker">DOCUMENTOS DO CONDOMÍNIO</div><h2>Vencimentos</h2><p className="panel-description">Cadastre documentos com prazo, periodicidade e arquivo PDF.</p></div><span className="table-total">{items.length} {items.length === 1 ? "registro" : "registros"}</span></div>
+      <PageToolbar query={query} setQuery={setQuery} placeholder="Buscar vencimento ou arquivo..." onNew={onNew} buttonText="Cadastrar vencimento" />
+      <div className="due-list">{filtered.map((item) => {
+        const isOverdue = item.status === "Pendente" && item.dueDate < today;
+        return <article className={`due-card ${isOverdue ? "due-card-overdue" : ""}`} key={item.id}>
+          <div className="due-card-main">
+            <div className="due-card-heading"><div><h3>{item.title}</h3>{item.description && <p>{item.description}</p>}</div>
+              <span className={`pill ${item.status === "Concluído" ? "pill-green" : isOverdue ? "pill-amber" : "pill-muted"}`}>{item.status === "Concluído" ? "Concluído" : isOverdue ? "Em atraso" : "Pendente"}</span>
+            </div>
+            <div className="due-card-details"><span><strong>Vencimento</strong>{formatLongDate(item.dueDate)}</span><span><strong>Periodicidade</strong>{recurrenceLabels[item.recurrence]}</span>
+              {item.pdfId && item.pdfName && <span className="due-card-file"><strong>Documento</strong><PdfDocumentLink id={item.pdfId} name={item.pdfName} /></span>}
+            </div>
+          </div>
+          {item.status === "Pendente" && <button className="button button-quiet due-complete-button" onClick={() => onComplete(item)}><Icon name="check" size={15} />Marcar como concluído</button>}
+        </article>;
+      })}</div>
+      {filtered.length === 0 && <EmptyState text={query ? "Nenhum vencimento encontrado para esta busca." : "Nenhum vencimento cadastrado neste condomínio."} action="Cadastrar vencimento" onClick={onNew} />}
+    </section>
+  </>;
+}
+
+function DocumentsPage({ items, onNew }: { items: DueItem[]; onNew: () => void }) {
+  const documents = items
+    .filter((item): item is DueItem & { pdfId: string; pdfName: string } => Boolean(item.pdfId && item.pdfName))
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+  return <section className="panel full-panel">
+    <div className="panel-heading"><div><div className="panel-kicker">ARQUIVOS DO CONDOMÍNIO</div><h2>Documentos</h2><p className="panel-description">Acesse os PDFs anexados aos vencimentos deste condomínio.</p></div><span className="table-total">{documents.length} {documents.length === 1 ? "documento" : "documentos"}</span></div>
+    <div className="due-list">{documents.map((item) => <article className="due-card" key={item.id}>
+      <div className="due-card-main">
+        <div className="due-card-heading"><div><h3>{item.title}</h3>{item.description && <p>{item.description}</p>}</div>
+          <span className={`pill ${item.status === "Concluído" ? "pill-green" : "pill-muted"}`}>{item.status}</span>
+        </div>
+        <div className="due-card-details"><span><strong>Vencimento</strong>{formatLongDate(item.dueDate)}</span>
+          <span className="due-card-file"><strong>Arquivo PDF</strong><PdfDocumentLink id={item.pdfId} name={item.pdfName} /></span>
+        </div>
+      </div>
+    </article>)}</div>
+    {documents.length === 0 && <EmptyState text="Ainda não há PDFs cadastrados para este condomínio." action="Cadastrar documento" onClick={onNew} />}
+  </section>;
+}
+
 function StockPage({ items, movements, query, setQuery, onNew, onAddItem }: { items: AppData["stock"]; movements: AppData["movements"]; query: string; setQuery: (value: string) => void; onNew: () => void; onAddItem: () => void }) {
   const low = items.filter((item) => item.quantity <= item.minimum);
   return <><div className="stock-summary"><div className="summary-box"><span>ITENS CADASTRADOS</span><strong>{items.length.toString().padStart(2, "0")}</strong><small>neste condomínio</small></div><div className={`summary-box ${low.length ? "summary-warning" : ""}`}><span>ATENÇÃO PARA REPOSIÇÃO</span><strong>{low.length.toString().padStart(2, "0")}</strong><small>{low.length ? "abaixo do mínimo" : "nenhum item pendente"}</small></div><div className="summary-box"><span>ÚLTIMAS MOVIMENTAÇÕES</span><strong>{movements.length.toString().padStart(2, "0")}</strong><small>registradas nesta demonstração</small></div></div><section className="panel full-panel"><div className="panel-heading"><div><div className="panel-kicker">MATERIAIS DO CONDOMÍNIO</div><h2>Estoque</h2><p className="panel-description">Acompanhe quantidades e níveis mínimos.</p></div><span className="table-total">{items.length} materiais</span></div><div className="list-toolbar"><SearchBox value={query} onChange={setQuery} placeholder="Buscar material..." /><div className="toolbar-actions"><button className="button button-quiet" onClick={onAddItem}><Icon name="plus" size={16} /> Cadastrar material</button><button className="button button-primary" onClick={onNew}><Icon name="arrow" size={16} /> Movimentar</button></div></div>
@@ -724,25 +891,27 @@ function EmptyState({ text, action, onClick }: { text: string; action?: string; 
   return <div className="empty-state"><div className="empty-icon"><Icon name="search" size={21} /></div><p>{text}</p>{action && onClick && <button className="text-button" onClick={onClick}>{action} <Icon name="chevron" size={15} /></button>}</div>;
 }
 
-function Modal({ type, items, defaultScheduleDate, defaultResponsible, onClose, onVisit, onMaintenance, onMovement, onStockItem, onCondo }: {
-  type: "visit" | "maintenance" | "movement" | "item" | "condo"; items: AppData["stock"]; onClose: () => void;
+function Modal({ type, items, defaultScheduleDate, defaultResponsible, onClose, onVisit, onMaintenance, onMovement, onStockItem, onCondo, onDueItem }: {
+  type: "visit" | "maintenance" | "movement" | "item" | "condo" | "due"; items: AppData["stock"]; onClose: () => void;
   defaultScheduleDate: string; defaultResponsible: string;
   onVisit: (form: HTMLFormElement) => void | Promise<void>; onMaintenance: (form: HTMLFormElement) => void | Promise<void>; onMovement: (form: HTMLFormElement) => void | Promise<void>;
   onStockItem: (form: HTMLFormElement) => void; onCondo: (form: HTMLFormElement) => void | Promise<void>;
+  onDueItem: (form: HTMLFormElement) => void | Promise<void>;
 }) {
   const isVisit = type === "visit";
   const isMaintenance = type === "maintenance";
   const isMovement = type === "movement";
   const isStockItem = type === "item";
   const isCondo = type === "condo";
+  const isDue = type === "due";
   const [submitting, setSubmitting] = useState(false);
   const [cep, setCep] = useState("");
   const [cepLoading, setCepLoading] = useState(false);
   const [cepResolved, setCepResolved] = useState(false);
   const [cepMessage, setCepMessage] = useState("");
   const [addressFields, setAddressFields] = useState({ street: "", number: "", complement: "", neighborhood: "", city: "", state: "" });
-  const title = isVisit ? "Registrar visita diária" : isMaintenance ? "Agendar manutenção" : isMovement ? "Movimentar estoque" : isStockItem ? "Cadastrar material" : "Adicionar condomínio";
-  const subtitle = isVisit ? "Registre a data, as atividades e as fotos da vistoria." : isMaintenance ? "Defina o horário e anexe fotos do serviço." : isMovement ? "Registre uma entrada ou saída de material." : isStockItem ? "Defina a categoria e o nível mínimo de reposição." : "Adicione outro condomínio à sua carteira.";
+  const title = isVisit ? "Registrar visita diária" : isMaintenance ? "Agendar manutenção" : isMovement ? "Movimentar estoque" : isStockItem ? "Cadastrar material" : isCondo ? "Adicionar condomínio" : "Cadastrar vencimento";
+  const subtitle = isVisit ? "Registre a data, as atividades e as fotos da vistoria." : isMaintenance ? "Defina o horário e anexe fotos do serviço." : isMovement ? "Registre uma entrada ou saída de material." : isStockItem ? "Defina a categoria e o nível mínimo de reposição." : isCondo ? "Adicione outro condomínio à sua carteira." : "Defina o prazo, a recorrência e anexe o documento PDF.";
   const lookupCep = async () => {
     const normalizedCep = cep.replace(/\D/g, "");
     if (normalizedCep.length !== 8) {
@@ -794,7 +963,8 @@ function Modal({ type, items, defaultScheduleDate, defaultResponsible, onClose, 
       else if (isMaintenance) await onMaintenance(form);
       else if (isMovement) await onMovement(form);
       else if (isStockItem) onStockItem(form);
-      else onCondo(form);
+      else if (isCondo) await onCondo(form);
+      else await onDueItem(form);
     } finally {
       setSubmitting(false);
     }
@@ -804,6 +974,7 @@ function Modal({ type, items, defaultScheduleDate, defaultResponsible, onClose, 
     {isMaintenance && <><label>Descrição do serviço<input name="title" required autoFocus placeholder="Ex.: Revisar bomba da piscina" /></label><div className="form-grid"><label>Local<input name="location" required placeholder="Ex.: Área de lazer" /></label><label>Responsável<input name="assignee" placeholder="Nome da pessoa" /></label></div><div className="form-grid"><label>Prioridade<select name="priority" defaultValue="Média"><option>Baixa</option><option>Média</option><option>Alta</option></select></label><label>Prazo<input name="dueDate" type="date" defaultValue={defaultScheduleDate} required /></label></div><div className="form-grid"><label>Data agendada<input name="scheduledDate" type="date" defaultValue={defaultScheduleDate} required /></label><label>Horário<input name="scheduledTime" type="time" defaultValue="09:00" required /></label></div><label>Duração estimada<select name="durationMinutes" defaultValue="60"><option value="30">30 minutos</option><option value="60">1 hora</option><option value="90">1 hora e 30 minutos</option><option value="120">2 horas</option><option value="180">3 horas</option><option value="240">4 horas</option></select></label><PhotoInput /></>}
     {isMovement && <>{items.length ? <label>Material<select name="itemId" required defaultValue={items[0]?.id}>{items.map((item) => <option key={item.id} value={item.id}>{item.name} · saldo {item.quantity} {item.unit}</option>)}</select></label> : <p className="form-notice">Ainda não há materiais cadastrados para este condomínio.</p>}<div className="form-grid"><label>Tipo de movimentação<select name="type" defaultValue="Entrada"><option>Entrada</option><option>Saída</option></select></label><label>Quantidade<input name="quantity" required type="number" min="1" step="1" placeholder="Ex.: 5" /></label></div><label>Observação<input name="note" placeholder="Ex.: Compra mensal, uso na limpeza..." /></label></>}
     {isStockItem && <><label>Nome do material<input name="name" required autoFocus maxLength={160} placeholder="Ex.: Desinfetante" /></label><div className="form-grid"><label>Categoria<select name="category" defaultValue="Limpeza"><option value="Limpeza">Limpeza</option><option value="Manutenção">Manutenção</option></select></label><label>Unidade<input name="unit" maxLength={16} defaultValue="un." placeholder="un., kg, L..." /></label></div><div className="form-grid"><label>Saldo inicial<input name="quantity" type="number" required min="0" step="1" defaultValue="0" /></label><label>Estoque mínimo<input name="minimum" type="number" required min="0" step="1" defaultValue="0" /></label></div></>}
+    {isDue && <><label>Nome do vencimento<input name="title" required autoFocus maxLength={200} placeholder="Ex.: Seguro predial" /></label><label>Descrição / observações<textarea name="description" rows={2} placeholder="Detalhes do compromisso ou fornecedor (opcional)" /></label><div className="form-grid"><label>Data do vencimento<input name="dueDate" type="date" defaultValue={defaultScheduleDate} required /></label><label>Periodicidade<select name="recurrence" defaultValue="Único"><option value="Único">Único</option><option value="Semestral">Semestral</option><option value="Anual">Anual</option><option value="Bienal">Bienal (a cada 2 anos)</option><option value="Trienal">Trienal (a cada 3 anos)</option></select></label></div><label className="photo-input-label">Documento do vencimento (PDF)<input name="pdf" type="file" accept="application/pdf,.pdf" /><span>Opcional · 1 PDF · até 15 MB. O arquivo fica associado a este vencimento.</span></label></>}
     {isCondo && <>
       <label>Nome do condomínio<input name="name" required autoFocus maxLength={120} placeholder="Ex.: Residencial das Flores" /></label>
       <div className="form-grid cep-search-row">
@@ -818,6 +989,6 @@ function Modal({ type, items, defaultScheduleDate, defaultResponsible, onClose, 
       <input type="hidden" name="cepLookupComplete" value={cepResolved ? "true" : "false"} />
       <p className="form-notice">Buscamos o endereço pelo serviço ViaCEP. Confira os dados antes de salvar.</p>
     </>}
-    <div className="modal-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={submitting || (isMovement && items.length === 0)}><Icon name="check" size={17} />{submitting ? "Salvando..." : isVisit ? "Salvar visita" : isMaintenance ? "Agendar manutenção" : isMovement ? "Salvar movimentação" : isStockItem ? "Cadastrar material" : "Adicionar condomínio"}</button></div>
+    <div className="modal-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={submitting || (isMovement && items.length === 0)}><Icon name="check" size={17} />{submitting ? "Salvando..." : isVisit ? "Salvar visita" : isMaintenance ? "Agendar manutenção" : isMovement ? "Salvar movimentação" : isStockItem ? "Cadastrar material" : isCondo ? "Adicionar condomínio" : "Cadastrar vencimento"}</button></div>
   </form></section></div>;
 }

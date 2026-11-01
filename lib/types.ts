@@ -1,7 +1,9 @@
-export type Section = "inicio" | "visitas" | "agenda" | "manutencoes" | "estoque" | "relatorios";
+export type Section = "inicio" | "visitas" | "agenda" | "manutencoes" | "vencimentos" | "documentos" | "estoque" | "relatorios";
 export type MaintenanceStatus = "Aberta" | "Em andamento" | "Concluída";
 export type StockCategory = "Limpeza" | "Manutenção";
 export type StockMovementType = "Entrada" | "Saída";
+export type DueRecurrence = "Único" | "Semestral" | "Anual" | "Bienal" | "Trienal";
+export type DueStatus = "Pendente" | "Concluído";
 export type DailyVisit = {
   id: string;
   condoId: string;
@@ -72,6 +74,22 @@ export interface StockMovement {
   note: string;
 }
 
+export interface DueItem {
+  id: string;
+  seriesId: string;
+  condoId: string;
+  title: string;
+  description: string;
+  dueDate: string;
+  recurrence: DueRecurrence;
+  status: DueStatus;
+  pdfId?: string;
+  pdfName?: string;
+  createdById?: string;
+  paidAt?: string;
+  createdAt: string;
+}
+
 export interface AppData {
   condos: Condo[];
   dailyVisits: DailyVisit[];
@@ -79,4 +97,5 @@ export interface AppData {
   maintenance: Maintenance[];
   stock: StockItem[];
   movements: StockMovement[];
+  dueItems: DueItem[];
 }
